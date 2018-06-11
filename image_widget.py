@@ -1,23 +1,12 @@
 import numpy as np
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QMutex, QMutexLocker, QWaitCondition, QPoint
-from PyQt5.QtWidgets import QLabel
+from PyQt5.QtWidgets import QLabel, QSizePolicy
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QBrush, QColor
 
 from collections import namedtuple
 
 State = namedtuple('State', 'mouse_pos drag_start_pos drag_end_pos dragging bounding_boxes selected_class')
-
-
-class BoundingBox(object):
-    def __init__(self, x=0, y=0, w=0, h=0, selected=False):
-        self.x = x
-        self.y = y
-        self.w = w
-        self.h = h
-        self.selected = selected
-
-
 def make_default_state():
     return State(
         mouse_pos=[0,0],
@@ -29,6 +18,33 @@ def make_default_state():
     )
 
 
+class BoundingBox(object):
+    def __init__(self, x=0, y=0, w=0, h=0, selected=False):
+        self.x = x
+        self.y = y
+        self.w = w
+        self.h = h
+        self.selected = selected
+
+    def xy_in_bounds(self, x, y):
+        return self.x < x < (self.x + self.w) and self.y < y < (self.y + self.h)
+
+    def get_area(self):
+        return self.w * self.h
+
+    def draw(self, painter):
+        if self.selected:
+            painter.setOpacity(0.5)
+        else:
+            painter.setOpacity(0.2)
+        painter.drawRect(
+            self.x,
+            self.y,
+            self.w,
+            self.h
+        )
+
+
 class RenderThread(QThread):
     renderedImage = pyqtSignal(QImage)
 
@@ -36,13 +52,13 @@ class RenderThread(QThread):
         super(RenderThread, self).__init__(parent)
 
         self.mutex = QMutex()
-
         self.state = make_default_state()
-
         self.condition = QWaitCondition()
-
         self.restart = False
         self.abort = False
+
+        self.base_image = None
+        self.canvas = self.make_canvas(800, 600)
 
     def __del__(self):
         self.mutex.lock()
@@ -52,13 +68,28 @@ class RenderThread(QThread):
 
         self.wait()
 
+    def make_canvas(self, width, height):
+        im_np = np.ones((width, height, 3), dtype=np.uint8)
+        im_np = np.transpose(im_np, (1, 0, 2)).copy()
+        canvas = QImage(im_np, im_np.shape[1], im_np.shape[0], QImage.Format_RGB888)
+        return canvas
+
+    def load_image(self, path):
+        image = QImage(path)
+        self.mutex.lock()
+        self.base_image = image
+
+        self.canvas = self.make_canvas(self.base_image.width(), self.base_image.height())
+
+        self.mutex.unlock()
+
     def render(self, state=None):
         locker = QMutexLocker(self.mutex)
 
         # update renderable state
         if state:
-            print("Update render state")
-            print("state =>", state)
+            # print("Update render state")
+            # print("state =>", state)
             self.state = state
 
         if not self.isRunning():
@@ -68,35 +99,28 @@ class RenderThread(QThread):
             self.condition.wakeOne()
 
     def run(self):
-
-        im_np = np.ones((800, 800, 3), dtype=np.uint8)
-        im_np = np.transpose(im_np, (1, 0, 2)).copy()
-        image = QImage(im_np, im_np.shape[1], im_np.shape[0], QImage.Format_RGB888)
-        base = QImage("/Users/jonathan/Documents/Scan 1.jpeg")
-        base = base.scaled(image.size(), Qt.KeepAspectRatio)
-
         while True:
             self.mutex.lock()
-
             state = self.state
+
+            # if self.base_image:
+            #     image = self.base_image
+            # else:
+            #     # base = QImage("/Users/jonathan/Documents/Scan 1.jpeg")
+            #     # base = base.scaled(image.size(), Qt.KeepAspectRatio)
 
             self.mutex.unlock()
 
-            # im_np = np.ones((1000, 1000, 3), dtype=np.uint8)
-            # im_np = np.transpose(im_np, (1,0,2)).copy()
-            # image = QImage(im_np, im_np.shape[1], im_np.shape[0], QImage.Format_RGB888)
-
             painter = QPainter()
 
-            painter.begin(image)
+            painter.begin(self.canvas)
 
             brush = QBrush(QColor("#FF00FF"))
             painter.setBrush(brush)
             painter.setPen(Qt.white)
 
-            painter.fillRect(image.rect(), Qt.blue)
-
-            painter.drawImage(0, 0, base)
+            # painter.fillRect(image.rect(), Qt.black)
+            # painter.drawImage(image.rect(), image)
 
             if state.dragging:
                 painter.setOpacity(0.2)
@@ -108,31 +132,12 @@ class RenderThread(QThread):
                 )
 
             for box in state.bounding_boxes:
-                if box.selected:
-                    painter.setOpacity(0.5)
-                    painter.drawRect(
-                        box.x,
-                        box.y,
-                        10,
-                        10
-
-                    )
-                else:
-                    painter.setOpacity(0.2)
-                painter.drawRect(
-                    box.x,
-                    box.y,
-                    box.w,
-                    box.h
-                )
-
-            # painter.drawLine(0, state.mouse_pos[1], image.width(), state.mouse_pos[1])
-            # painter.drawLine(state.mouse_pos[0], 0, state.mouse_pos[0], image.height())
+                box.draw(painter)
 
             painter.end()
 
             if not self.restart:
-                self.renderedImage.emit(image)
+                self.renderedImage.emit(self.canvas)
 
             self.mutex.lock()
             if not self.restart:
@@ -145,33 +150,20 @@ class ImageWidget(QLabel):
     def __init__(self, parent):
         super(QLabel, self).__init__(parent)
 
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CrossCursor)
+
         self.thread = RenderThread()
-        self.base_image = QPixmap()
         self.pixmap = QPixmap()
         self.thread.renderedImage.connect(self.updatePixmap)
-        # self.pixmap = None
-        # im_np = np.ones((1800, 2880, 3), dtype=np.uint8)
-        # im_np = np.transpose(im_np, (1,0,2)).copy()
-        # qimage = QImage(im_np, im_np.shape[1], im_np.shape[0], QImage.Format_RGB888)
-        # self.pixmap = QPixmap(qimage)
-        # self.pixmap = self.pixmap.scaled(640, 480, Qt.KeepAspectRatio)
-        # self.setPixmap(self.pixmap)
-        # self.pixmap.fill(Qt.white)
-        self.setCursor(Qt.CrossCursor)
+
         self.thread.render()
         # https://stackoverflow.com/questions/7829829/pyqt4-mousemove-event-without-mousepress
-        self.setMouseTracking(True)
 
         self.state = make_default_state()
 
-    def loadImage(self, path):
-        self.base_image = QPixmap(path)
-
-    def is_point_in_box(self, x, y, box):
-        return x > box.x and x < (box.x+box.w) and y > box.y and y < (box.y+box.h)
-
-    def get_box_area(self, box):
-        return box.w * box.h
+        self.thread.load_image("/Users/jonathan/Desktop/scanned on 20180605/Scan.jpeg")
 
     def mouseMoveEvent(self, event):
         mouse_x = event.pos().x()
@@ -189,42 +181,58 @@ class ImageWidget(QLabel):
         mouse_x = event.pos().x()
         mouse_y = event.pos().y()
 
-        boxes = self.state.bounding_boxes
-        for box in boxes:
-            box.selected = self.is_point_in_box(mouse_x, mouse_y, box)
-            self.thread.render(self.state)
-
-        self.state = self.state._replace(bounding_boxes=boxes)
-
+        # event.buttons() => bitmask of ALL buttons - i.e we can perform multi click etc.
         if event.buttons() & Qt.LeftButton:
+            boxes = self.state.bounding_boxes
+
+            for box in boxes:
+                box.selected = box.xy_in_bounds(mouse_x, mouse_y)
+                self.thread.render(self.state)
+
+            self.state = self.state._replace(bounding_boxes=boxes)
+
             self.state = self.state._replace(
                 drag_start_pos=[mouse_x, mouse_y],
                 dragging=True,
             )
 
     def mouseReleaseEvent(self, event):
-        # if event.buttons() & Qt.LeftButton:
-        if self.state.dragging:
-            self.state = self.state._replace(
-                drag_end_pos=[event.pos().x(), event.pos().y()],
-                dragging=False
-            )
+        # event.button() (lack of 's') => button that caused the event.
+        if event.button() == Qt.LeftButton:
+            if self.state.dragging:
+                self.state = self.state._replace(
+                    drag_end_pos=[event.pos().x(), event.pos().y()],
+                    dragging=False
+                )
 
-            bounding_boxes = self.state.bounding_boxes
+                bounding_boxes = self.state.bounding_boxes
 
-            x = self.state.drag_start_pos[0]
-            y = self.state.drag_start_pos[1]
-            w = self.state.drag_end_pos[0] - x
-            h = self.state.drag_end_pos[1] - y
+                x1 = self.state.drag_start_pos[0]
+                x2 = self.state.drag_end_pos[0]
+                y1 = self.state.drag_start_pos[1]
+                y2 = self.state.drag_end_pos[1]
 
-            box = BoundingBox(x=x, y=y, w=w, h=h, selected=True)
+                # Normalize coordinates (remove difference between start corner and end corner):
+                # top left, bottom right => x,y,w,h
 
-            if self.get_box_area(box) > 100:
-                bounding_boxes.append(box)
+                min_x = min(x1, x2)
+                min_y = min(y1, y2)
+                max_x = max(x1, x2)
+                max_y = max(y1, y2)
 
-            self.state = self.state._replace(
-                bounding_boxes=bounding_boxes
-            )
+                x = min_x
+                y = min_y
+                w = max_x - min_x
+                h = max_y - min_y
+
+                box = BoundingBox(x=x, y=y, w=w, h=h, selected=True)
+
+                if box.get_area() > 20:
+                    bounding_boxes.append(box)
+
+                self.state = self.state._replace(
+                    bounding_boxes=bounding_boxes
+                )
 
     def paintEvent(self, event):
         painter = QPainter(self)

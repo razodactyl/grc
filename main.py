@@ -1,9 +1,10 @@
 import sys
 
-from PyQt5.QtWidgets import QMainWindow, QApplication, QFileDialog, QPushButton, QProgressBar, QLabel
+from PyQt5.QtWidgets import QMainWindow, QApplication, QFileDialog, QPushButton, QProgressBar, QLabel, QDesktopWidget
 
 from table_widget import TableWidget
 from image_widget import ImageWidget
+from image_widget_controls import ImageControlsWidget
 from file_list_widget import FileListWidget
 from class_list_widget import ClassListWidget
 
@@ -17,8 +18,8 @@ class App(QMainWindow):
 
         self.data_dir = ""
 
-        self.left = 500
-        self.top = 500
+        self.left = 0
+        self.top = 0
         self.width = 1024
         self.height = 768
         self.setGeometry(self.left, self.top, self.width, self.height)
@@ -31,17 +32,21 @@ class App(QMainWindow):
         class_list = ClassListWidget()
         self.tab_panel.tab1.layout.addWidget(class_list)
 
-        # progress = QProgressBar(self)
-        # progress.setGeometry(200, 80, 250, 20)
-        # progress.setValue(100)
-        # self.tab_panel.tab2.layout.addWidget(progress)
-
         self.image_panel = ImageWidget(self)
+        self.image_panel_controls = ImageControlsWidget()
         self.tab_panel.tab2.layout.addWidget(self.image_panel)
+        self.tab_panel.tab2.layout.addWidget(self.image_panel_controls)
 
         self.setCentralWidget(self.tab_panel)
 
+        self.center()
+
         self.show()
+
+    def center(self):
+        screen = QDesktopWidget().screenGeometry()
+        size = self.geometry()
+        self.move((screen.width()-size.width())/2, (screen.height()-size.height())/2)
 
     def loadDataDirectory(self):
         d = QFileDialog.getExistingDirectory(self, "Select Directory")
